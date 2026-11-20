@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  portable:
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: debian:12-slim
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt 6 base and packaging dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential patchelf python3 xz-utils \
+            qt6-base-dev qt6-wayland
+      - name: Build and verify tests on ${{ matrix.arch }}
+        run: |
+          ./bin/build
+          mkdir -p build/tests/formatter build/tests/backend
+          (cd build/tests/formatter && qmake6 ../../../tests/formatter_tests.pro && make -j"$(nproc)" && ./formatter-tests)
+          (cd build/tests/backend && qmake6 ../../../tests/backend_tests.pro && make -j"$(nproc)" && QT_QPA_PLATFORM=offscreen ./backend-tests)
+          python3 tests/desktop_tests.py
+      - name: Build portable glibc 2.36 archive
+        run: ./bin/package-portable dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sol-linux-${{ matrix.arch }}
+          path: |
+            dist/sol-linux-${{ matrix.arch }}.tar.xz
+            dist/sol-linux-${{ matrix.arch }}.tar.xz.sha256
+
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build clean source archive
+        run: ./bin/release --source-only dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sol-source
+          path: |
+            dist/sol-*-src.tar.gz
+            dist/sol-*-src.tar.gz.sha256
+
+  publish:
+    needs: [portable, source]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-files
+          merge-multiple: true
+      - name: Generate unified SHA256SUMS
+        working-directory: release-files
+        run: |
+          sha256sum *.tar.xz *.tar.gz > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Sol ${{ github.ref_name }}
+          body: |
+            ## Downloads
+
+            - **Linux x86_64**: `sol-linux-x86_64.tar.xz`
+            - **Linux ARM64 (aarch64)**: `sol-linux-aarch64.tar.xz`
+            - **Source**: `sol-*-src.tar.gz`
+            - **Checksums**: `SHA256SUMS`
+
+            ## Install
+
+            ```sh
+            # x86_64
+            tar -xf sol-linux-x86_64.tar.xz
+            cd sol-linux-x86_64 && ./install.sh
+
+            # ARM64 (aarch64)
+            tar -xf sol-linux-aarch64.tar.xz
+            cd sol-linux-aarch64 && ./install.sh
+            ```
+
+            Then run:
+
+            ```sh
+            sol setup
+            sol
+            ```
+          files: release-files/*
+          generate_release_notes: true

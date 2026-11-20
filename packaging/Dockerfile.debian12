@@ -1,0 +1,18 @@
+FROM debian:12-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    patchelf \
+    python3 \
+    qt6-base-dev \
+    qt6-wayland \
+    xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . /src
+RUN ./bin/package-portable /out
+
+FROM scratch AS export
+COPY --from=builder /out/ /

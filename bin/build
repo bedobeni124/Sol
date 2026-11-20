@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+dest=${SOL_BUILD_DIR:-"$root/build"}
+mkdir -p "$dest"
+cd "$dest"
+qmake6 "$root/sol.pro"
+make -j"${JOBS:-$(nproc)}"

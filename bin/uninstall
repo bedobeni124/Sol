@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Standalone uninstaller fallback (identical to `sol uninstall`).
+set -euo pipefail
+
+prefix="${SOL_PREFIX:-$HOME/.local}"
+data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+
+if [[ -x "$prefix/bin/sol" ]]; then
+    exec "$prefix/bin/sol" uninstall "$@"
+fi
+
+purge=false
+for arg in "$@"; do
+    case "$arg" in
+        --purge) purge=true ;;
+        --yes|-y) ;;
+    esac
+done
+
+rm -f "$prefix/bin/sol" "$prefix/bin/sol-setup-speech" \
+      "$data_home/applications/org.sol.Dictation.desktop" "$data_home/applications/sol.desktop" \
+      "$data_home/icons/hicolor/scalable/apps/org.sol.Dictation.svg" "$data_home/icons/hicolor/scalable/apps/sol.svg" \
+      "$config_home/autostart/org.sol.Dictation.desktop"
+rm -rf "$prefix/libexec/sol" "$prefix/lib/sol"
+
+if $purge; then
+    rm -rf "$data_home/sol" "$state_home/sol" "$config_home/sol"
+fi
+echo "Sol uninstalled."

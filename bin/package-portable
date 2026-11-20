@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Build inside Debian 12 to set the glibc floor for a portable release archive.
+set -euo pipefail
+root=$(cd -- "$(dirname -- "$0")/.." && pwd)
+dest=${1:-"$root/dist"}
+mkdir -p -- "$dest"
+dest=$(cd -- "$dest" && pwd)
+arch=$(uname -m)
+case "$arch" in x86_64|aarch64) ;; *) echo "Unsupported release architecture: $arch" >&2; exit 2 ;; esac
+for tool in qmake6 make python3 patchelf dpkg-query xz strip; do
+    command -v "$tool" >/dev/null || { echo "Missing packaging tool: $tool" >&2; exit 1; }
+done
+stage=$(mktemp -d)
+trap 'rm -rf -- "$stage"' EXIT
+name="sol-linux-$arch"
+install -d "$stage/build" "$stage/$name/bin" "$stage/$name/libexec/sol" "$stage/$name/share/sol"
+(cd "$stage/build" && qmake6 "$root/sol.pro" CONFIG+=release && make -j"${SOL_BUILD_JOBS:-4}")
+strip --strip-all -R .comment "$stage/build/sol"
+install -m755 "$stage/build/sol" "$stage/$name/bin/sol"
+ln -s bin/sol "$stage/$name/sol"
+install -m755 "$root/bin/setup-speech" "$stage/$name/libexec/sol/setup-speech"
+ln -s "../libexec/sol/setup-speech" "$stage/$name/bin/setup-speech"
+install -m644 "$root/pkgbuild/sol.svg" "$stage/$name/share/sol/sol.svg"
+install -d "$stage/$name/pkgbuild"
+install -m644 "$root/pkgbuild/org.sol.Dictation.desktop" "$stage/$name/pkgbuild/org.sol.Dictation.desktop"
+install -m755 "$root/install.sh" "$stage/$name/install.sh"
+install -m644 "$root/docs/portable.md" "$stage/$name/README.md"
+if [[ -f "$root/LICENSE" ]]; then install -m644 "$root/LICENSE" "$stage/$name/LICENSE"; fi
+python3 "$root/packaging/qt_runtime.py" "$stage/$name" "$root"
+archive="$dest/$name.tar.xz"
+partial=$(mktemp "$dest/.${name}.XXXXXX")
+trap 'rm -rf -- "$stage"; rm -f -- "$partial"' EXIT
+tar --sort=name --owner=0 --group=0 --numeric-owner -C "$stage" -cf - "$name" | xz -T2 -6 > "$partial"
+chmod 644 "$partial"
+mv -- "$partial" "$archive"
+(cd "$dest" && sha256sum "$name.tar.xz" > "$name.tar.xz.sha256")
+echo "$archive"

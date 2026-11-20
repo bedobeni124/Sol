@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Run an integration test against an isolated PipeWire graph with a virtual microphone.
+# Commands within the test can feed a WAV to the microphone using paplay.
+set -euo pipefail
+if (( $# == 0 )); then echo 'Usage: with-virtual-mic COMMAND [ARGUMENT ...]' >&2; exit 2; fi
+sandbox=$(mktemp -d)
+mkdir -m 700 "$sandbox/run"
+pids=()
+cleanup() {
+    local pid
+    for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
+    wait || true
+    rm -rf -- "$sandbox"
+}
+trap cleanup EXIT
+dbus-daemon --session --nofork --address="unix:path=$sandbox/bus" >"$sandbox/bus.log" 2>&1 &
+pids+=("$!")
+private=(env XDG_RUNTIME_DIR="$sandbox/run" XDG_CONFIG_HOME="$sandbox/config"
+         XDG_STATE_HOME="$sandbox/state" DBUS_SESSION_BUS_ADDRESS="unix:path=$sandbox/bus"
+         GIO_USE_VFS=local)
+"${private[@]}" pipewire >"$sandbox/server.log" 2>&1 &
+pids+=("$!")
+for _ in {1..100}; do [[ -S "$sandbox/run/pipewire-0" ]] && break; sleep .05; done
+"${private[@]}" pipewire-pulse >"$sandbox/pulse.log" 2>&1 &
+pids+=("$!")
+"${private[@]}" wireplumber -p policy >"$sandbox/policy.log" 2>&1 &
+pids+=("$!")
+export PULSE_SERVER="unix:$sandbox/run/pulse/native"
+for _ in {1..100}; do pactl info >/dev/null 2>&1 && break; sleep .05; done
+pactl load-module module-null-sink sink_name=soltest >/dev/null
+pactl load-module module-remap-source master=soltest.monitor source_name=sol-input >/dev/null
+pactl set-default-source sol-input
+export PULSE_SOURCE=sol-input PULSE_SINK=soltest
+export PIPEWIRE_RUNTIME_DIR="$sandbox/run" PIPEWIRE_REMOTE=pipewire-0
+"$@"

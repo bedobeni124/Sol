@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    echo 'Usage: setup-speech [auto|cuda|cpu] [auto|tiny|base|small|medium|large-v3-turbo]'
+    echo 'Installs an offline multilingual Whisper model and its runtime for the current user.'
+}
+mode=${1:-auto}
+requested_model=${2:-auto}
+case "$mode" in
+    -h|--help) usage; exit 0 ;;
+    auto|cpu|cuda) ;;
+    *) usage >&2; exit 2 ;;
+esac
+case "$requested_model" in
+    auto|tiny|base|small|medium|large-v3-turbo) ;;
+    *) usage >&2; exit 2 ;;
+esac
+
+if [[ "$mode" = auto ]]; then
+    mode=cpu
+    if command -v nvidia-smi >/dev/null && nvidia-smi --id=0 --query-gpu=compute_cap,memory.total --format=csv,noheader,nounits 2>/dev/null | awk -F', ' '$1 >= 7 && $2 >= 6144 { eligible=1 } END { exit !eligible }'; then
+        mode=cuda
+    fi
+fi
+
+root="${XDG_DATA_HOME:-$HOME/.local/share}/sol/speech"
+mkdir -p "$root"
+exec 9>"$root/setup.lock"
+flock 9
+
+arch=$(uname -m)
+case "$arch" in
+    x86_64)
+        uv_digest=e614681a150d52446eb8f4cf34f90b5d42b609bd1f2615da049449d795bfe5b4
+        cublas_digest=2fc8da60df463fdefa81e323eef2e36489e1c94335b5358bcb38360adf75ac9b
+        cudnn_digest=9ad9c6929ebb5295eb4a1728024666d1c88283373e265a0c5c883e6f9d5cd76d ;;
+    aarch64)
+        uv_digest=9dda17fe2261a16ce0d267617e5898b9678ba6c5f1c8528b7fe48d32d839f427
+        cublas_digest=0f8aa1706812e00b9f19dfe0cdb3999b092ccb8ca168c0db5b8ea712456fd9b3
+        cudnn_digest=c5cf7ff3415e446adf195a5b7dd2ba56cd00c3ee78bfdc566e51698931aa4b7f ;;
+    *) echo "No speech runtime wheel is available for $arch." >&2; exit 1 ;;
+esac
+
+extras=()
+if [[ "$mode" = cuda ]]; then
+    extras=(
+        "https://pypi.nvidia.com/nvidia-cublas-cu12/nvidia_cublas_cu12-12.4.5.8-py3-none-manylinux2014_${arch}.whl#sha256=$cublas_digest"
+        "https://pypi.nvidia.com/nvidia-cudnn-cu12/nvidia_cudnn_cu12-9.3.0.75-py3-none-manylinux2014_${arch}.whl#sha256=$cudnn_digest"
+    )
+fi
+
+if [[ "$requested_model" = auto ]]; then
+    if [[ "$mode" = cuda ]]; then
+        model=large-v3-turbo
+    else
+        model=small
+    fi
+else
+    model="$requested_model"
+fi
+
+digest=""
+case "$model" in
+    large-v3-turbo)
+        repo=dropbox-dash/faster-whisper-large-v3-turbo
+        revision=0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf
+        digest=e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da
+        model_files=(config.json tokenizer.json preprocessor_config.json vocabulary.json) ;;
+    small)
+        repo=Systran/faster-whisper-small
+        revision=536b0662742c02347bc0e980a01041f333bce120
+        digest=3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671
+        model_files=(config.json tokenizer.json vocabulary.txt) ;;
+    tiny)
+        repo=Systran/faster-whisper-tiny
+        revision=main
+        model_files=(config.json tokenizer.json vocabulary.txt) ;;
+    base)
+        repo=Systran/faster-whisper-base
+        revision=main
+        model_files=(config.json tokenizer.json vocabulary.txt) ;;
+    medium)
+        repo=Systran/faster-whisper-medium
+        revision=main
+        model_files=(config.json tokenizer.json vocabulary.txt) ;;
+esac
+
+echo "Setting up $model on $mode in $root"
+if command -v uv >/dev/null; then
+    installer=uv
+else
+    installer="$root/bootstrap/uv"
+    if [[ ! -x "$installer" ]]; then
+        staging=$(mktemp -d "$root/.bootstrap.XXXXXXXX")
+        trap 'rm -rf -- "$staging"' EXIT
+        asset="uv-$arch-unknown-linux-musl"
+        curl -fL --retry 3 "https://github.com/astral-sh/uv/releases/download/0.9.10/$asset.tar.gz" -o "$staging/uv.tar.gz"
+        (cd "$staging" && echo "$uv_digest  uv.tar.gz" | sha256sum --check --status && tar -xzf uv.tar.gz "$asset/uv")
+        mkdir -p "$root/bootstrap"
+        mv "$staging/$asset/uv" "$installer"
+    fi
+fi
+venv="$root/runtime-v1"
+if [[ ! -x "$venv/bin/python" ]]; then
+    "$installer" venv --python 3.12 "$venv"
+fi
+"$installer" pip install --python "$venv/bin/python" faster-whisper==1.2.1 ctranslate2==4.6.3 av==15.1.0 "${extras[@]}"
+
+dest="$root/models/$model"
+mkdir -p "$dest"
+fetch() {
+    local f=$1
+    if [[ -s "$dest/$f" ]]; then return; fi
+    curl -fL --retry 5 --retry-all-errors --connect-timeout 20 -C - -o "$dest/$f.part" \
+        "https://huggingface.co/$repo/resolve/$revision/$f"
+    mv "$dest/$f.part" "$dest/$f"
+}
+for f in "${model_files[@]}" model.bin; do fetch "$f"; done
+if [[ -n "$digest" ]]; then
+    if ! (cd "$dest" && echo "$digest  model.bin" | sha256sum --check --status); then
+        mv "$dest/model.bin" "$dest/model.bin.corrupt"
+        echo 'Model verification failed. Run setup-speech again to fetch a fresh copy.' >&2
+        exit 1
+    fi
+fi
+"$venv/bin/python" - "$root" "$mode" "$model" <<'PY'
+import json, os, sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+stage = root / "engine.json.tmp"
+stage.write_text(json.dumps(dict(device=sys.argv[2], model=sys.argv[3])), encoding="utf-8")
+os.replace(stage, root / "engine.json")
+PY
+echo "Sol speech recognition is ready ($model, $mode)."

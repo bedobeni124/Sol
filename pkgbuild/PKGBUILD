@@ -1,0 +1,44 @@
+pkgname=sol
+pkgver=0.2.0
+pkgrel=1
+pkgdesc='Local speech-to-text dictation for Linux'
+arch=('x86_64' 'aarch64')
+url='https://github.com/bedobeni124/Sol'
+license=('MIT')
+options=('!debug')
+depends=('qt6-base' 'qt6-wayland' 'python' 'python-gobject')
+makedepends=('qt6-base' 'layer-shell-qt')
+optdepends=(
+    'layer-shell-qt: Wayland floating HUD pill overlay'
+    'pipewire-pulse: PulseAudio/PipeWire microphone capture (parec/paplay)'
+    'pipewire: PipeWire native audio capture (pw-record/pw-play)'
+    'alsa-utils: ALSA audio capture and playback fallback'
+    'wl-clipboard: Wayland clipboard paste and preservation'
+    'wtype: wlroots Wayland paste delivery'
+    'xdotool: X11 active window detection and paste delivery'
+    'xclip: X11 clipboard paste and preservation'
+    'python-xlib: X11 global shortcut listener'
+    'at-spi2-core: Focused-field context and direct accessible insertion'
+    'libnotify: Fallback status notifications'
+)
+source=()
+sha256sums=()
+
+build() {
+    local root="${SOL_SRC_DIR:-$startdir/..}"
+    mkdir -p "$srcdir/build"
+    cd "$srcdir/build"
+    qmake6 "$root/sol.pro" CONFIG+=release
+    make -j"$(nproc)"
+    strip --strip-all -R .comment "$srcdir/build/sol"
+}
+
+package() {
+    local root="${SOL_SRC_DIR:-$startdir/..}"
+    install -Dm755 "$srcdir/build/sol" "$pkgdir/usr/bin/sol"
+    install -Dm755 "$root/bin/setup-speech" "$pkgdir/usr/libexec/sol/setup-speech"
+    ln -s ../libexec/sol/setup-speech "$pkgdir/usr/bin/sol-setup-speech"
+    install -Dm644 "$root/pkgbuild/org.sol.Dictation.desktop" "$pkgdir/usr/share/applications/org.sol.Dictation.desktop"
+    install -Dm644 "$root/pkgbuild/sol.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/org.sol.Dictation.svg"
+    install -Dm644 "$root/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

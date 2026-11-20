@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Sol
+GenericName=Voice Dictation
+Comment=Local speech-to-text dictation daemon
+Exec=sol daemon
+Icon=org.sol.Dictation
+Terminal=false
+Categories=Utility;Accessibility;Audio;
+Keywords=dictation;voice;speech;whisper;transcription;stt;
+StartupNotify=false
+Actions=Toggle;
+
+[Desktop Action Toggle]
+Name=Toggle Dictation
+Exec=sol toggle

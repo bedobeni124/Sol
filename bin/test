@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd -- "$(dirname -- "$0")/.." && pwd)
+out="$root/build/tests"
+mkdir -p "$out/formatter" "$out/backend"
+
+echo "==> Building Sol"
+"$root/bin/build"
+
+echo "==> Running C++ Formatter tests"
+(cd "$out/formatter" && qmake6 "$root/tests/formatter_tests.pro" && make -j"${JOBS:-$(nproc)}" && ./formatter-tests)
+
+echo "==> Running C++ Backend, Audio, HUD & CLI tests"
+(cd "$out/backend" && qmake6 "$root/tests/backend_tests.pro" && make -j"${JOBS:-$(nproc)}" && QT_QPA_PLATFORM=offscreen ./backend-tests)
+
+echo "==> Running Python XDG Portal tests"
+python3 "$root/tests/portal_tests.py"
+
+echo "==> Running Python Desktop, Paste & CLI Install/Uninstall tests"
+python3 "$root/tests/desktop_tests.py"
+
+echo "==> All tests passed!"

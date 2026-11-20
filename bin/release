@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Build verified, size-optimized release artifacts for Sol into dist/.
+set -euo pipefail
+
+root=$(cd -- "$(dirname -- "$0")/.." && pwd)
+version=$(awk -F= '/^pkgver=/{print $2; exit}' "$root/pkgbuild/PKGBUILD")
+arch=$(uname -m)
+dest="$root/dist"
+source_only=false
+skip_tests=false
+portable_docker=false
+
+usage() {
+    cat <<'EOF'
+Usage: bin/release [OPTIONS] [DEST_DIR]
+
+Options:
+  --source-only    Only package the clean universal source tarball
+  --portable       Also build a glibc-2.36 portable .tar.xz via Docker (Debian 12)
+  --skip-tests     Skip running bin/test before packaging
+  -h, --help       Show this help
+EOF
+}
+
+while (( $# > 0 )); do
+    case "$1" in
+        --source-only) source_only=true; shift ;;
+        --portable) portable_docker=true; shift ;;
+        --skip-tests) skip_tests=true; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) dest="$1"; shift ;;
+    esac
+done
+
+mkdir -p -- "$dest"
+dest=$(cd -- "$dest" && pwd)
+
+if ! $source_only && ! $skip_tests; then
+    echo "==> Running full verification suite before release"
+    "$root/bin/test"
+fi
+
+stage=$(mktemp -d)
+trap 'rm -rf -- "$stage"' EXIT
+
+echo "==> Packaging source tarball (sol-${version}-src.tar.gz)"
+src_name="sol-${version}"
+mkdir -p "$stage/$src_name"
+for item in LICENSE README.md sol.pro install.sh .gitignore src bin packaging pkgbuild docs tests; do
+    if [[ -e "$root/$item" ]]; then
+        cp -a "$root/$item" "$stage/$src_name/$item"
+    fi
+done
+rm -rf "$stage/$src_name/src/__pycache__" \
+       "$stage/$src_name/pkgbuild/pkg" \
+       "$stage/$src_name/pkgbuild/src" \
+       "$stage/$src_name/pkgbuild"/*.pkg.tar.* \
+       "$stage/$src_name/pkgbuild"/*.tar.gz \
+       "$stage/$src_name/tests/__pycache__"
+find "$stage/$src_name" -name '*.pyc' -delete
+tar --sort=name --owner=0 --group=0 --numeric-owner -C "$stage" -czf "$dest/${src_name}-src.tar.gz" "$src_name"
+(cd "$dest" && sha256sum "${src_name}-src.tar.gz" > "${src_name}-src.tar.gz.sha256")
+
+if ! $source_only; then
+    echo "==> Building size-optimized stripped release binary (sol-${version}-linux-${arch})"
+    mkdir -p "$stage/release-build"
+    (cd "$stage/release-build" && qmake6 "$root/sol.pro" CONFIG+=release && make -j"${JOBS:-$(nproc)}")
+    strip --strip-all -R .comment "$stage/release-build/sol"
+    install -m755 "$stage/release-build/sol" "$dest/sol-${version}-linux-${arch}"
+    mkdir -p "$root/build"
+    install -m755 "$stage/release-build/sol" "$root/build/sol"
+
+    if command -v makepkg >/dev/null 2>&1; then
+        echo "==> Building Arch / Omarchy release package"
+        pkg_work="$stage/pkgbuild"
+        cp -a "$root/pkgbuild" "$pkg_work"
+        rm -rf "$pkg_work/pkg" "$pkg_work/src" "$pkg_work"/*.pkg.tar.*
+        (cd "$pkg_work" && SOL_SRC_DIR="$root" PKGDEST="$dest" makepkg -fc --noconfirm)
+    fi
+
+    if command -v dpkg-query >/dev/null 2>&1 && command -v patchelf >/dev/null 2>&1; then
+        echo "==> Building portable glibc release archive via bin/package-portable"
+        "$root/bin/package-portable" "$dest"
+    elif $portable_docker; then
+        echo "==> Building Debian 12 glibc-2.36 portable release via Docker"
+        docker build -f "$root/packaging/Dockerfile.debian12" --output "type=local,dest=$dest" "$root"
+    fi
+fi
+
+echo "==> Generating unified SHA256SUMS"
+(
+    cd "$dest"
+    rm -f SHA256SUMS
+    files=()
+    for f in sol-*.tar.gz sol-*.tar.xz sol-*.pkg.tar.* "sol-${version}-linux-${arch}"; do
+        [[ -f "$f" ]] && files+=("$f")
+    done
+    if (( ${#files[@]} > 0 )); then
+        sha256sum "${files[@]}" > SHA256SUMS
+        sha256sum --check SHA256SUMS
+    fi
+)
+
+echo ""
+echo "==> Release v${version} ready in $dest:"
+ls -lh "$dest"
